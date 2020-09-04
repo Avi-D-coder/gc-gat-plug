@@ -12,12 +12,29 @@ fn main() {
     println!("Hello, world!");
 }
 
+pub trait PlugT<T>: Plug {
+    type TT;
+}
+
+impl<'a, A, T: Plug> PlugT<A> for T {
+    type TT = Self::T<A>;
+}
+
+pub trait PlugL<'a>: PlugLife {
+    type TL;
+}
+
+impl<'a, T: PlugLife> PlugL<'a> for T {
+    type TL = Self::T<'a>;
+}
+
 pub trait Plug {
     type T<T>: UnPlug<T = Self>;
 }
 
 pub trait UnPlug {
-    type T: Plug;
+    type T: PlugT<Self::A, TT = Self>;
+    type A;
 }
 
 pub trait PlugLife {
@@ -26,7 +43,14 @@ pub trait PlugLife {
 
 pub trait UnPlugLife {
     type T: PlugLife;
+    type L;
 }
+
+
+pub trait UnPlugL<'a> {
+    type T: PlugL<'a, TL = Self>;
+}
+
 
 pub struct P<T: 'static>(T);
 impl<T: 'static> PlugLife for P<T> {
@@ -35,6 +59,7 @@ impl<T: 'static> PlugLife for P<T> {
 
 impl<T: 'static> UnPlugLife for P<T> {
     type T = P<T>;
+    type L = &'static ();
 }
 
 impl PlugLife for usize {
@@ -43,6 +68,7 @@ impl PlugLife for usize {
 
 impl UnPlugLife for usize {
     type T = usize;
+    type L = &'static ();
 }
 
 /// Realy `Gc<'r, T>(&'r T<'r>);`
@@ -60,6 +86,7 @@ impl<T: PlugLife> PlugLife for GcL<T> {
 }
 impl<'r, T: UnPlugLife> UnPlugLife for Gc<'r, T> {
     type T = GcL<<T as UnPlugLife>::T>;
+    type L = &'r ();
 }
 
 #[test]
@@ -176,12 +203,14 @@ mod list {
     }
     impl<'r, T: UnPlugLife> UnPlugLife for List<'r, T> {
         type T = ListL<<T as UnPlugLife>::T>;
+        type L = &'r ();
     }
     impl<T: PlugLife> PlugLife for ElemL<T> {
         type T<'l> = Elem<'l, <T as PlugLife>::T<'l>>;
     }
     impl<'r, T: UnPlugLife> UnPlugLife for Elem<'r, T> {
         type T = ElemL<<T as UnPlugLife>::T>;
+        type L = &'r ();
     }
 
     impl<T: PlugLife> ElemL<T> {
@@ -247,5 +276,19 @@ where
 
             List::from(ElemL::<Of<T>>::gc(arena, next, value.clone()))
         }
+    }
+}
+
+mod map {
+    use super::*;
+
+    pub struct Map<'r, K, V>(Gc<'r, Node<'r, K, V>>);
+
+    pub struct Node<'r, K, V> {
+        key: K,
+        size: usize,
+        left: Map<'r, K, V>,
+        right: Map<'r, K, V>,
+        value: V,
     }
 }
