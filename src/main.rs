@@ -276,13 +276,83 @@ where
 mod map {
     use super::*;
 
-    pub struct Map<'r, K, V>(Gc<'r, Node<'r, K, V>>);
-
-    pub struct Node<'r, K, V> {
+    pub struct Map<'r, K: UnPlugLife, V: UnPlugLife>(Option<Gc<'r, Node<'r, K, V>>>);
+    pub struct Node<'r, K: UnPlugLife, V: UnPlugLife> {
         key: K,
         size: usize,
         left: Map<'r, K, V>,
         right: Map<'r, K, V>,
         value: V,
+    }
+
+    pub struct MapC<'r, K: UnPlugLife, V: UnPlugLife>(Option<Gc<'r, Node<'r, K, V>>>);
+    pub struct NodeC<
+        'r,
+        'r1,
+        K0: UnPlugLife,
+        K1: UnPlugLife,
+        K2: UnPlugLife,
+        V0: UnPlugLife,
+        V1: UnPlugLife,
+        V2: UnPlugLife,
+    > {
+        key: K0,
+        size: usize,
+        left: Map<'r, K1, V0>,
+        right: Map<'r1, K2, V1>,
+        value: V2,
+    }
+
+    impl<
+            'r0,
+            'r1,
+            K0: UnPlugLife,
+            K1: UnPlugLife,
+            K2: UnPlugLife,
+            V0: UnPlugLife,
+            V1: UnPlugLife,
+            V2: UnPlugLife,
+        > NodeC<'r0, 'r1, K0, K1, K2, V0, V1, V2>
+    {
+        unsafe fn coerce_lifes<'r, K: UnPlugLife, V: UnPlugLife>(self) -> Node<'r, K, V> {
+            let r = std::mem::transmute_copy(&self);
+            std::mem::forget(self);
+            r
+        }
+    }
+
+    pub struct MapL<K, V>(PhantomData<(K, V)>);
+    pub struct NodeL<K, V>(PhantomData<(K, V)>);
+    impl<K: PlugLife, V: PlugLife> PlugLife for MapL<K, V> {
+        type T<'l> = Map<'l, <K as PlugLife>::T<'l>, <V as PlugLife>::T<'l>>;
+    }
+    impl<'r, K: UnPlugLife, V: UnPlugLife> UnPlugLife for Map<'r, K, V> {
+        type T = MapL<<K as UnPlugLife>::T, <V as UnPlugLife>::T>;
+        type L = &'r ();
+    }
+    impl<K: PlugLife, V: PlugLife> PlugLife for NodeL<K, V> {
+        type T<'l> = Node<'l, <K as PlugLife>::T<'l>, <V as PlugLife>::T<'l>>;
+    }
+    impl<'r, K: UnPlugLife, V: UnPlugLife> UnPlugLife for Node<'r, K, V> {
+        type T = NodeL<<K as UnPlugLife>::T, <V as UnPlugLife>::T>;
+        type L = &'r ();
+    }
+
+    #[test]
+    fn lifes_test() {
+        fn foo<'n, 'l, 'r, K: UnPlugLife, V: UnPlugLife>(
+            key: K,
+            value: V,
+            left: Ty<'l, Map<'n, K, V>>,
+            right: Ty<'r, Map<'n, K, V>>,
+        ) {
+            let node = NodeC {
+                key,
+                value,
+                size: 3,
+                left,
+                right,
+            };
+        }
     }
 }
