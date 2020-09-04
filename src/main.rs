@@ -13,7 +13,7 @@ fn main() {
 }
 
 pub trait Plug {
-    type T<T>: UnPlug;
+    type T<T>: UnPlug<T = Self>;
 }
 
 pub trait UnPlug {
@@ -21,7 +21,7 @@ pub trait UnPlug {
 }
 
 pub trait PlugLife {
-    type T<'l>: 'l + UnPlugLife;
+    type T<'l>: 'l + UnPlugLife<T = Self>;
 }
 
 pub trait UnPlugLife {
@@ -112,6 +112,10 @@ where
     B: PlugLife,
 {
 }
+// unsafe impl<A, B> TyEq<B> for A
+// where
+//     TyEq<list::ListL<<T as UnPlugLife>::T>>` is not implemented for `list::List<'_, <<T as UnPlugLife>::T as PlugLife>::T<'_>>
+// {}
 
 // pub trait Trace {}
 
@@ -157,7 +161,6 @@ mod auto_traits {
 mod list {
     use super::*;
 
-    #[derive(Clone)]
     pub struct List<'r, T>(Option<Gc<'r, Elem<'r, T>>>);
     #[derive(Clone)]
     pub struct Elem<'r, T> {
@@ -191,7 +194,12 @@ mod list {
         }
     }
 
-    impl<'r, T: Copy> Copy for List<'r, T> {}
+    impl<'r, T> Clone for List<'r, T> {
+        fn clone(&self) -> Self {
+            *self
+        }
+    }
+    impl<'r, T> Copy for List<'r, T> {}
     impl<'r, T: Copy> Copy for Elem<'r, T> {}
 
     impl<'r, T> From<Gc<'r, Elem<'r, T>>> for List<'r, T> {
@@ -222,6 +230,22 @@ mod list {
             };
             List::from(e)
             // todo!()
+        }
+
+        pub fn insert<'r, 'a: 'r>(
+            self,
+            index: usize,
+            arena: &'a Arena<ElemL<Of<T>>>,
+        ) -> List<'r, Ty<'r, T>>
+where
+    // T::L<'static>: GC + Clone + Sized + ID<<T as Life>::L<'static>>,
+    // T::L<'a>: GC + Sized,
+    // T::L<'r>: GC + Sized,
+        {
+            let Gc(Elem { value, next }) = self.0.unwrap();
+            let next = next.insert(index - 1, arena);
+
+            List::from(ElemL::<Of<T>>::gc(arena, next, value.clone()))
         }
     }
 }
