@@ -6,7 +6,6 @@
 #![feature(optin_builtin_traits)]
 
 use auto_traits::NoGc;
-use generic_std::plug::{PlugLifetime, PlugType};
 use std::marker::PhantomData;
 
 fn main() {
@@ -14,43 +13,36 @@ fn main() {
 }
 
 pub trait Plug {
-    type P<T: PlugLife>: UnPlug;
+    type T<T>: UnPlug;
 }
 
 pub trait UnPlug {
-    type U: Plug;
+    type T: Plug;
 }
 
 pub trait PlugLife {
-    type L<'l>: 'l + UnPlugLife;
+    type T<'l>: 'l + UnPlugLife;
 }
 
 pub trait UnPlugLife {
-    type Ul: PlugLife;
+    type T: PlugLife;
 }
 
-impl PlugLife for H2Gc {
-    type L<'r> = H1Gc<'r>;
+pub struct P<T: 'static>(T);
+impl<T: 'static> PlugLife for P<T> {
+    type T<'l> = P<T>;
 }
 
-impl<'r> UnPlugLife for H1Gc<'r> {
-    type Ul = H2Gc;
+impl<T: 'static> UnPlugLife for P<T> {
+    type T = P<T>;
 }
 
-impl<'r> Plug for H1Gc<'r> {
-    type P<T: PlugLife> = Gc<'r, <T as PlugLife>::L<'r>>;
+impl PlugLife for usize {
+    type T<'l> = usize;
 }
 
-impl<'r, T> UnPlug for Gc<'r, T> {
-    type U = H1Gc<'r>;
-}
-
-impl<T: 'static + NoGc> PlugLife for T {
-    type L<'l> = T;
-}
-
-impl<T: 'static + NoGc> UnPlugLife for T {
-    type Ul = T;
+impl UnPlugLife for usize {
+    type T = usize;
 }
 
 /// Realy `Gc<'r, T>(&'r T<'r>);`
@@ -62,16 +54,12 @@ impl<'r, T> Clone for Gc<'r, T> {
     }
 }
 
-pub struct H2Gc(PhantomData<Gc<'static, ()>>);
-pub struct H1Gc<'a>(PhantomData<Gc<'a, ()>>);
-impl<'a> PlugLifetime<'a> for H2Gc {
-    type T = H1Gc<'a>;
+pub struct GcL<T>(PhantomData<T>);
+impl<T: PlugLife> PlugLife for GcL<T> {
+    type T<'l> = Gc<'l, <T as PlugLife>::T<'l>>;
 }
-impl<'a, T: 'a> PlugType<T> for H1Gc<'a> {
-    type T = Gc<'a, T>;
-}
-impl<'b, A, B: 'b> PlugType<B> for Gc<'b, A> {
-    type T = Gc<'b, B>;
+impl<'r, T: UnPlugLife> UnPlugLife for Gc<'r, T> {
+    type T = GcL<<T as UnPlugLife>::T>;
 }
 
 #[test]
@@ -80,14 +68,11 @@ fn unify_test() {
     foo::<usize, usize>();
     foo::<Gc<usize>, Gc<usize>>();
 
-    fn lifes<'a, 'b, T: for<'l> PlugLifetime<'l>>()
-    where
-        <T as PlugLifetime<'a>>::T: PlugLifetime<'b>,
-        <T as PlugLifetime<'b>>::T: Id<<<T as PlugLifetime<'a>>::T as PlugLifetime<'b>>::T>,
-    {
+    fn lifes<'a, 'b, T: for<'l> PlugLife>() {
+        foo::<Ty<'b, Gc<'a, usize>>, Gc<'b, usize>>();
         // let a: Gc<'a, usize> = Gc(&1);
         // let b: Gc<'b, usize> = transmute_lifetime(a);
-        foo::<<<T as PlugLifetime<'a>>::T as PlugLifetime<'b>>::T, <T as PlugLifetime<'b>>::T>();
+        // foo::<>();
         // foo::<Gc<'a, usize>, Gc<'a, Ty<'a, usize>>>();
     }
     // foo::<Gc<usize>, Gc<Ty<Ty<String>>>>();
@@ -99,14 +84,42 @@ unsafe impl<T> Id<T> for T {}
 #[marker]
 pub unsafe trait TyEq<B> {}
 unsafe impl<T> TyEq<T> for T {}
-unsafe impl<'a, A: PlugLifetime<'a>, B: PlugLifetime<'a>> TyEq<A> for B where A::T: Id<B::T> {}
+unsafe impl<A, B> TyEq<B> for A
+where
+    Static<A>: Id<Static<B>>,
+    A: UnPlugLife,
+    B: UnPlugLife,
+{
+}
+unsafe impl<A, B> TyEq<B> for A
+where
+    Static<A>: Id<Static<B>>,
+    A: UnPlugLife,
+    B: UnPlugLife,
+{
+}
+unsafe impl<A, B> TyEq<B> for A
+where
+    A::T<'static>: Id<Static<B>>,
+    A: PlugLife,
+    B: UnPlugLife,
+{
+}
+unsafe impl<A, B> TyEq<B> for A
+where
+    B::T<'static>: Id<Static<A>>,
+    A: UnPlugLife,
+    B: PlugLife,
+{
+}
 
-pub trait Trace {}
+// pub trait Trace {}
 
-type Ty<'r, T> = <T as PlugLifetime<'r>>::T;
-type Static<T> = <T as PlugLifetime<'static>>::T;
+pub type Ty<'r, T> = <<T as UnPlugLife>::T as PlugLife>::T<'r>;
+pub type Static<T> = <<T as UnPlugLife>::T as PlugLife>::T<'static>;
+pub type Of<T> = <T as UnPlugLife>::T;
 
-pub struct Arena<A>(Vec<A>);
+pub struct Arena<T: PlugLife>(Vec<T::T<'static>>);
 
 mod auto_traits {
     use super::*;
@@ -141,76 +154,74 @@ mod auto_traits {
     impl<'l, T> !NotDerived for Gc<'l, T> {}
 }
 
-// mod list {
-//     use super::*;
+mod list {
+    use super::*;
 
-//     #[derive(Clone)]
-//     pub struct List<'r, T>(Option<Gc<'r, Elem<'r, T>>>);
-//     #[derive(Clone)]
-//     pub struct Elem<'r, T> {
-//         next: List<'r, T>,
-//         value: T,
-//     }
+    #[derive(Clone)]
+    pub struct List<'r, T>(Option<Gc<'r, Elem<'r, T>>>);
+    #[derive(Clone)]
+    pub struct Elem<'r, T> {
+        next: List<'r, T>,
+        value: T,
+    }
 
-//     pub struct H2List;
-//     pub struct H1List<'a>(PhantomData<&'a ()>);
-//     impl<'a> PlugLifetime<'a> for H2List {
-//         type T = H1List<'a>;
-//     }
-//     impl<'a, T: 'a> PlugType<T> for H1List<'a> {
-//         type T = List<'a, <T as PlugLifetime<'a>>::T>;
-//     }
-//     impl<'a, T> PlugLifetime<'a> for List<'a, T> {
-//         type T = List<'a, <T as PlugLifetime<'a>>::T>;
-//     }
-//     impl<'b, A, B: 'b> PlugType<B> for List<'b, A> {
-//         type T = List<'b, B>;
-//     }
+    pub struct ListL<T>(PhantomData<T>);
+    pub struct ElemL<T>(PhantomData<T>);
 
-//     pub struct H2Elem;
-//     pub struct H1Elem<'a>(PhantomData<&'a ()>);
-//     impl<'a> PlugLifetime<'a> for H2Elem {
-//         type T = H1Elem<'a>;
-//     }
-//     impl<'a, T: 'a> PlugType<T> for H1Elem<'a> {
-//         type T = Elem<'a, <T as PlugLifetime<'a>>::T>;
-//     }
-//     impl<'a, T> PlugLifetime<'a> for Elem<'a, T> {
-//         type T = Elem<'a, <T as PlugLifetime<'a>>::T>;
-//     }
-//     impl<'b, A, B: 'b> PlugType<B> for Elem<'b, A> {
-//         type T = Elem<'b, B>;
-//     }
+    impl<T: PlugLife> PlugLife for ListL<T> {
+        type T<'l> = List<'l, <T as PlugLife>::T<'l>>;
+    }
+    impl<'r, T: UnPlugLife> UnPlugLife for List<'r, T> {
+        type T = ListL<<T as UnPlugLife>::T>;
+    }
+    impl<T: PlugLife> PlugLife for ElemL<T> {
+        type T<'l> = Elem<'l, <T as PlugLife>::T<'l>>;
+    }
+    impl<'r, T: UnPlugLife> UnPlugLife for Elem<'r, T> {
+        type T = ElemL<<T as UnPlugLife>::T>;
+    }
 
-//     impl<'r, T> Elem<'r, T> {
-//         pub fn gc<'a: 'r>(
-//             arena: Arena<Static<T>>,
-//             next: impl TyEq<List<'r, T>>,
-//             value: impl TyEq<T>,
-//         ) -> Elem<'r, Ty<'r, T>> {
-//             let e = todo!();
-//         }
-//     }
+    impl<T: PlugLife> ElemL<T> {
+        pub fn gc<'r, 'a: 'r>(
+            arena: &'a Arena<Self>,
+            next: impl TyEq<ListL<T>>,
+            value: impl TyEq<T>,
+        ) -> Gc<'r, Elem<'r, <T as PlugLife>::T<'r>>> {
+            let e = todo!();
+        }
+    }
 
-//     impl<'r, T: Copy> Copy for List<'r, T> {}
-//     impl<'r, T: Copy> Copy for Elem<'r, T> {}
+    impl<'r, T: Copy> Copy for List<'r, T> {}
+    impl<'r, T: Copy> Copy for Elem<'r, T> {}
 
-//     impl<'r, T> From<Gc<'r, Elem<'r, T>>> for List<'r, T> {
-//         fn from(e: Gc<'r, Elem<'r, T>>) -> Self {
-//             List(Some(e))
-//         }
-//     }
+    impl<'r, T> From<Gc<'r, Elem<'r, T>>> for List<'r, T> {
+        fn from(e: Gc<'r, Elem<'r, T>>) -> Self {
+            List(Some(e))
+        }
+    }
 
-//     impl<'o, T: Clone> List<'o, T> {
-//         /// Prepend `value` to a list.
-//         /// The arguments are in reverse order.
-//         pub fn cons<'r, 'a: 'r>(
-//             self,
-//             value: T,
-//             arena: &'a Arena<Static<T>>,
-//         ) -> List<'r, Ty<'r, T>> {
-//             let e: Elem<Ty<T>> = Elem::<T>::gc(todo!(), self, value);
-//             // let _ = List::from(e);
-//         }
-//     }
-// }
+    impl<'o, T: Clone + UnPlugLife> List<'o, T> {
+        /// Prepend `value` to a list.
+        /// The arguments are in reverse order.
+        pub fn cons<'r, 'a: 'r>(
+            self,
+            value: T,
+            arena: &'a Arena<ElemL<Of<T>>>,
+        ) -> List<'r, Ty<'r, T>>
+        where
+            T: PartialEq<Ty<'r, T>>,
+        {
+            let val = value.clone();
+            let e: Gc<Elem<Ty<'r, T>>> = ElemL::<Of<T>>::gc(arena, self, value);
+            match e {
+                Gc(Elem { next, value: v }) => {
+                    if val == *v {
+                    } else {
+                    }
+                }
+            };
+            List::from(e)
+            // todo!()
+        }
+    }
+}
