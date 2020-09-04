@@ -21,14 +21,6 @@ impl<'a, A, T: Plug> PlugT<A> for T {
     type TT = Self::T<A>;
 }
 
-pub trait PlugL<'a>: PlugLife {
-    type TL: UnPlugL<'a>;
-}
-
-impl<'a, T: PlugLife> PlugL<'a> for T {
-    type TL = Self::T<'a>;
-}
-
 pub trait Plug {
     type T<T>: UnPlug<T = Self>;
 }
@@ -39,24 +31,13 @@ pub trait UnPlug {
 }
 
 pub trait PlugLife {
-    type T<'l>: 'l + UnPlugLife<T = Self> + UnPlugL<'l, T = Self>;
+    type T<'l>: 'l + UnPlugLife<T = Self>;
 }
 
 pub trait UnPlugLife {
     type T: PlugLife;
     type L;
 }
-
-pub trait UnPlugL<'a>: UnPlugLife {
-    type T: PlugL<'a, TL = Self>;
-}
-
-// impl<'a, 'l: 'a, T: UnPlugLife<L = &'l ()>> UnPlugL<'a> for T
-// where
-//     T::T: PlugL<'a, TL = Self>,
-// {
-//     type T = T::T;
-// }
 
 pub struct P<T: 'static>(T);
 impl<T: 'static> PlugLife for P<T> {
@@ -68,12 +49,6 @@ impl<T: 'static> UnPlugLife for P<T> {
     type L = &'static ();
 }
 
-impl<'r, T: 'static> UnPlugL<'r> for P<T> {
-    type T = P<T>;
-}
-
-
-
 impl PlugLife for usize {
     type T<'l> = usize;
 }
@@ -83,15 +58,11 @@ impl UnPlugLife for usize {
     type L = &'static ();
 }
 
-impl<'r> UnPlugL<'r> for usize {
-    type T = usize;
-}
-
 #[test]
 fn unplug_l_test() {
-fn a<'a>(t: <P<String> as UnPlugL<'a>>::T) {}
-fn b<'a>(t: <usize as UnPlugL<'a>>::T) {}
-fn c<'a, T: UnPlugLife>(t: <Gc<'a, T> as UnPlugL<'a>>::T) {}
+    fn a<'a>(t: <P<String> as UnPlugLife>::T) {}
+    fn b<'a>(t: <usize as UnPlugLife>::T) {}
+    fn c<'a, T: UnPlugLife>(t: <Gc<'a, T> as UnPlugLife>::T) {}
 }
 
 /// Realy `Gc<'r, T>(&'r T<'r>);`
@@ -110,9 +81,6 @@ impl<T: PlugLife> PlugLife for GcL<T> {
 impl<'r, T: UnPlugLife> UnPlugLife for Gc<'r, T> {
     type T = GcL<<T as UnPlugLife>::T>;
     type L = &'r ();
-}
-impl<'r, T: UnPlugL<'r>> UnPlugL<'r> for Gc<'r, T> {
-    type T = GcL<<T as UnPlugL<'r>>::T>;
 }
 
 #[test]
