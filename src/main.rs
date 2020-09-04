@@ -259,12 +259,7 @@ mod list {
             self,
             index: usize,
             arena: &'a Arena<ElemL<Of<T>>>,
-        ) -> List<'r, Ty<'r, T>>
-where
-    // T::L<'static>: GC + Clone + Sized + ID<<T as Life>::L<'static>>,
-    // T::L<'a>: GC + Sized,
-    // T::L<'r>: GC + Sized,
-        {
+        ) -> List<'r, Ty<'r, T>> {
             let Gc(Elem { value, next }) = self.0.unwrap();
             let next = next.insert(index - 1, arena);
 
@@ -285,16 +280,16 @@ mod map {
         value: V,
     }
 
-    pub struct MapC<'r, K: UnPlugLife, V: UnPlugLife>(Option<Gc<'r, Node<'r, K, V>>>);
+    pub struct MapC<'r, K0: UnPlugLife, V0: UnPlugLife>(Option<Gc<'r, Node<'r, K0, V0>>>);
     pub struct NodeC<
         'r,
         'r1,
         K0: UnPlugLife,
-        K1: UnPlugLife,
-        K2: UnPlugLife,
+        K1: UnPlugLife + TyEq<K0>,
+        K2: UnPlugLife + TyEq<K0>,
         V0: UnPlugLife,
-        V1: UnPlugLife,
-        V2: UnPlugLife,
+        V1: UnPlugLife + TyEq<V0>,
+        V2: UnPlugLife + TyEq<V0>,
     > {
         key: K0,
         size: usize,
@@ -303,23 +298,23 @@ mod map {
         value: V2,
     }
 
-    impl<
-            'r0,
-            'r1,
-            K0: UnPlugLife,
-            K1: UnPlugLife,
-            K2: UnPlugLife,
-            V0: UnPlugLife,
-            V1: UnPlugLife,
-            V2: UnPlugLife,
-        > NodeC<'r0, 'r1, K0, K1, K2, V0, V1, V2>
-    {
-        unsafe fn coerce_lifes<'r, K: UnPlugLife, V: UnPlugLife>(self) -> Node<'r, K, V> {
-            let r = std::mem::transmute_copy(&self);
-            std::mem::forget(self);
-            r
-        }
-    }
+    // impl<
+    //         'r0,
+    //         'r1,
+    //         K0: UnPlugLife,
+    //         K1: UnPlugLife,
+    //         K2: UnPlugLife,
+    //         V0: UnPlugLife,
+    //         V1: UnPlugLife,
+    //         V2: UnPlugLife,
+    //     > NodeC<'r0, 'r1, K0, K1, K2, V0, V1, V2>
+    // {
+    //     unsafe fn coerce_lifes<'r, K: UnPlugLife, V: UnPlugLife>(self) -> Node<'r, K, V> {
+    //         let r = std::mem::transmute_copy(&self);
+    //         std::mem::forget(self);
+    //         r
+    //     }
+    // }
 
     pub struct MapL<K, V>(PhantomData<(K, V)>);
     pub struct NodeL<K, V>(PhantomData<(K, V)>);
