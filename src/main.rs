@@ -4,6 +4,7 @@
 #![feature(generic_associated_types)]
 #![feature(negative_impls)]
 #![feature(optin_builtin_traits)]
+#![feature(associated_type_bounds)]
 
 extern crate static_assertions as sa;
 use auto_traits::NoGc;
@@ -38,6 +39,14 @@ pub trait UnPlugLife {
     type T: PlugLife;
     type L;
 }
+
+// pub trait UnPlugLife {
+//     type T: PlugLife where for<'a> <Self::T as PlugLife>::T<'a>: Id<Self>;
+//     type L;
+// }
+
+// pub trait TypeEq<B> {}
+// impl<A, B> TypeEq<B> for A where A == B  {}
 
 impl<T: 'static + NoGc> PlugLife for T {
     type T<'l> = T;
@@ -355,7 +364,7 @@ mod map {
 
     #[test]
     fn cmp_life_test() {
-        fn good<'a, 'b, T: Eq>(a: Gc<'a, Gc<'a, T>>, b: Gc<'b, Gc<'b, T>>) -> bool {
+        fn good0<'a, 'b, T: Eq>(a: Gc<'a, Gc<'a, T>>, b: Gc<'b, Gc<'b, T>>) -> bool {
             a == b
         }
 
@@ -363,14 +372,44 @@ mod map {
         //     a == b
         // }
 
-        fn bad<'a, 'b>(a: Ty<'a, usize>, b: Ty<'b, Gc<Gc<usize>>>) -> bool {
+        fn good<'a, 'b>(a: Ty<'a, usize>, b: Ty<'b, Gc<Gc<usize>>>) -> bool {
             a == **b
         }
 
-        fn bad1<'a, 'b, T: Eq + UnPlugLife>(a: Gc<'a, Gc<'a, T>>, b: Ty<'b, Gc<Gc<T>>>) -> bool {
-            let t: Gc<Gc<Ty<T>>> = b;
-            // a == b
-            todo!()
+        // fn bad2<'a, 'b, T: Eq + UnPlugLife>(a: Gc<'a, Gc<'a, T>>, b: Ty<'b, Gc<Gc<T>>>) -> bool {
+        //     let t: Gc<Gc<Ty<T>>> = b;
+        //     a == b //~ found struct `Gc<'b, Gc<'b, <<T as UnPlugLife>::T as PlugLife>::T<'b>>>`
+        //            //^ expected struct `Gc<'_, Gc<'_, T>>`
+        // }
+
+        fn bad<'a, T: Eq + UnPlugLife>(a: Gc<'a, T>, b: Ty<'a, Gc<'static, T>>) -> bool
+        where
+            for<'l> <<T as UnPlugLife>::T as PlugLife>::T<'l>: Id<T>,
+        {
+            let _: Gc<Ty<T>> = b;
+            let _: Gc<'a, Ty<T>> = b;
+            let _: Gc<'a, Ty<'a, T>> = b;
+            let _: Ty<'a, Gc<'a, T>> = b;
+            let _: Ty<'a, Gc<'static, T>> = b;
+            // a == b //~ expected struct `Gc<'_, T>`
+                   //^ found struct `Gc<'a, <<T as UnPlugLife>::T as PlugLife>::T<'a>>`
+                   todo!()
         }
+    }
+
+    #[derive(Eq, PartialEq)]
+    enum List<'l, T> {
+        Cons(&'l T, &'l Self),
+        Nil,
+    }
+
+    fn bar<'a, 'b, T: Eq>(a: &'a T, b: &'b T) -> bool {
+        foo(a, b)
+    }
+
+    fn foo<'a, 'b, T: Eq>(a: &'a T, b: &'b T) -> bool {
+        let b: List<T> = List::Cons(b, &List::Nil);
+        let a: List<T> = List::Cons(a, &b);
+        a == b
     }
 }
