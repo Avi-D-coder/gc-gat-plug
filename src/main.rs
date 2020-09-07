@@ -4,8 +4,6 @@
 #![feature(generic_associated_types)]
 #![feature(negative_impls)]
 #![feature(optin_builtin_traits)]
-#![feature(associated_type_bounds)]
-#![feature(dropck_eyepatch)]
 
 extern crate static_assertions as sa;
 use auto_traits::NoGc;
@@ -426,7 +424,7 @@ mod fam {
         type T: 'static + Life;
     }
     trait Life: 'static {
-        type L<#[may_dangle] 'l>: Type<T = Self>;
+        type L<'l>: Type<T = Self>;
     }
 
     #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq)]
@@ -438,7 +436,6 @@ mod fam {
     impl<T: 'static + NoGc> Life for PF<T> {
         type L<'l> = T;
     }
-
 
     #[derive(Eq, PartialEq)]
     struct Gc<'r, T: Life>(&'r T::L<'r>);
@@ -464,15 +461,6 @@ mod fam {
     impl<T: Life> Life for GcF<T> {
         type L<'l> = Gc<'l, T>;
     }
-
-    // struct T2F<A: Life, B: Life>(PhantomData<GcF<(A, B)>>);
-    // impl<A: Type, B: Type> Type for (A, B) {
-    //     type T = T2F<A::T, B::T>;
-    // }
-
-    // impl<A: Life, B: Life> Life for T2F<A, B> {
-    //     type L<'l> = (A::L<'l>, B::L<'l>);
-    // }
 
     struct Map<'r, K: Life, V: Life>(Option<Gc<'r, NodeF<K, V>>>);
     struct Node<'r, K: Life, V: Life> {
@@ -507,15 +495,12 @@ mod fam {
     //     *a == *b
     // }
 
-
-    fn bad<'a, 'b, T: Life>(a: Gc<'a, PF<usize>>, b: Gc<'b, PF<usize>>) -> bool
-    {
+    fn bad<'a, 'b, T: Life>(a: Gc<'a, PF<usize>>, b: Gc<'b, PF<usize>>) -> bool {
         let _ = a == b;
         *a == *b
     }
 
-    fn good<T: Eq>(a: &T, b: &T) -> bool
-    {
+    fn good<T: Eq>(a: &T, b: &T) -> bool {
         let _ = a == b;
         *a == *b
     }
@@ -541,12 +526,16 @@ mod fam {
         type L<'l> = List<'l, T>;
     }
 
+    fn foo<'l, 'a: 'l, 'b: 'l, T: Life + Eq>(a: T::L<'a>, b: Gc<'b, ListF<T>>) {
+        let a: List<'l, T> = List::Cons(a, b); //~ [rustc E0623] [E] lifetime mismatch ...but data from `b` flows into `a` here
+    }
 
-    fn foo<'l, 'a: 'l, 'b: 'l, T: Life + Eq>(a: T::L<'a>, b: Gc<'b, ListF<T>>) -> bool
-    {
-        let a: List<'l, T> = List::Cons(a, b);
-        // a == b
-        todo!()
+    fn foo_usize<'l, 'a: 'l, 'b: 'l>(
+        a: <PF<usize> as Life>::L<'a>,
+        b: Gc<'b, ListF<PF<usize>>>,
+    ) -> bool {
+        let a: List<'l, PF<usize>> = List::Cons(a, b);
+        a == *b
     }
 
     // fn foo<'a, 'b, T: Life + Eq>(a: T::L<'a>, b: List<'b, T>) -> bool
@@ -570,7 +559,7 @@ enum List<'l, T> {
 }
 
 fn foo<'a, 'b, T: Eq>(a: &'a T, b: List<'b, T>) -> bool {
-    let a: List<T> = List::Cons(a, &b);
+    let a: List<'_, T> = List::Cons(a, &b);
     a == b
 }
 
