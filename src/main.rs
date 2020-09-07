@@ -8,13 +8,25 @@
 #![feature(const_trait_impl)]
 #![feature(const_trait_bound_opt_out)]
 #![feature(const_fn)]
+#![feature(const_type_name)]
 
 extern crate static_assertions as sa;
 use auto_traits::NoGc;
 use std::marker::PhantomData;
 
 fn main() {
-    println!("Hello, world!");
+    fn foo<'a, 'b, A: 'static, B: 'a, C: 'b>() -> (&'a str, &'a str, &'a str) {
+        (
+            std::any::type_name::<Foo<'static, A>>(),
+            std::any::type_name::<Foo<'a, B>>(),
+            std::any::type_name::<Foo<'b, C>>(),
+        )
+    }
+    println!("{:?}", foo::<usize, usize, usize>());
+
+    struct Foo<'a, T> {
+        t: &'a T,
+    }
 }
 
 // pub trait PlugT<T>: Plug {
@@ -418,8 +430,19 @@ mod map {
 }
 
 mod coerce {
-    use std::{cell::UnsafeCell, mem::{transmute_copy, transmute}, any::TypeId};
+    use std::{
+        any::{self, TypeId},
+        cell::UnsafeCell,
+        mem::{self, transmute, transmute_copy},
+        ptr,
+    };
 
+    pub struct PhantomGc;
+    pub unsafe auto trait NoGc {}
+    impl<'r, T> !NoGc for Gc<'r, T> {}
+    impl !NoGc for PhantomGc {}
+
+    #[derive(Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
     pub struct Gc<'r, T: 'r>(&'r T);
     impl<'r, T> Copy for Gc<'r, T> {}
     impl<'r, T> Clone for Gc<'r, T> {
@@ -432,8 +455,8 @@ mod coerce {
 
     impl<A> Default for Arena<A> {
         fn default() -> Self {
-        Arena(UnsafeCell::new(Vec::new()))
-    }
+            Arena(UnsafeCell::new(Vec::new()))
+        }
     }
 
     impl<A> Arena<A> {
@@ -450,16 +473,90 @@ mod coerce {
         type S: 'static;
     }
 
-    trait CoerceLife<'b, 'a: 'b,  A: 'a>: 'b {
-        fn from(a: A) -> Self;
-        const TYPE_ID_EQ: ();
+    impl<T: 'static + NoGc> Static for T {
+        type S = T;
     }
 
-    impl<'b, 'a: 'b, A: 'a + Static, B: 'b + Static> const CoerceLife<'b, 'a, Gc<'a, A>> for Gc<'b, B> where TypeId: ?const PartialEq {
-        fn from(a: Gc<'a, A>) -> Self {
-      unsafe {    transmute(a)} 
+    unsafe trait CoerceLife<'b, 'a: 'b, A: 'a>: 'b + Sized {
+        fn from(a: A) -> Self {
+            let b = unsafe { ptr::read(&a as *const _ as *const _) };
+            mem::forget(a);
+            b
+        }
+        const TYPE_ID_EQ: () = if !type_name_eq::<A, Self>() {
+            panic!("type mismatch")
+        };
     }
 
-        const TYPE_ID_EQ: () = if 1 == 1 { panic!("type missmatch") };
+    unsafe impl<'b, 'a: 'b, A: 'a + Static, B: 'b + Static> CoerceLife<'b, 'a, Gc<'a, A>>
+        for Gc<'b, B>
+    {
+        const TYPE_ID_EQ: () = assert_type_id_eq::<A, B>();
+    }
+
+    const fn assert_type_id_eq<A: Static, B: Static>() {
+        if !type_id_eq::<A, B>() {
+            panic!("type mismatch")
+        }
+    }
+
+    const fn type_name_eq<A, B>() -> bool {
+        let a = any::type_name::<A>().as_bytes();
+        let b = any::type_name::<B>().as_bytes();
+        if a.len() != b.len() {
+            false
+        } else {
+            let mut i = 0;
+            while i < a.len() {
+                i -= 1;
+
+                if a[i] != b[i] {
+                    return false;
+                }
+            }
+
+            true
+        }
+    }
+
+    const fn type_id_eq<A: Static, B: Static>() -> bool {
+        unsafe {
+            transmute::<TypeId, usize>(TypeId::of::<usize>())
+                == transmute::<TypeId, usize>(TypeId::of::<usize>())
+        }
+    }
+
+    mod list {
+        use super::{assert_type_id_eq, CoerceLife, Gc, Static};
+        use std::{
+            mem::{self, transmute},
+            ptr,
+        };
+
+        #[derive(Eq, PartialEq)]
+        enum List<'r, T> {
+            Cons(T, Gc<'r, T>),
+            Nil,
+        }
+
+        impl<'r, T> List<'r, T> {
+            fn cons<'a>() {}
+        }
+
+        impl<'r, T: Static> Static for List<'r, T> {
+            type S = List<'static, T::S>;
+        }
+
+        unsafe impl<'b, 'a: 'b, A: 'a + Static, B: 'b + Static> CoerceLife<'b, 'a, List<'a, A>>
+            for List<'b, B>
+        {
+            fn from(a: List<'a, A>) -> Self {
+                let b = unsafe { ptr::read(&a as *const _ as *const _) };
+                mem::forget(a);
+                b
+            }
+
+            const TYPE_ID_EQ: () = assert_type_id_eq::<A, B>();
+        }
     }
 }
