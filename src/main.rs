@@ -443,7 +443,7 @@ mod coerce {
     impl !NoGc for PhantomGc {}
 
     #[derive(Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
-    pub struct Gc<'r, T: 'r>(&'r T);
+    pub struct Gc<'r, T>(&'r T);
     impl<'r, T> Copy for Gc<'r, T> {}
     impl<'r, T> Clone for Gc<'r, T> {
         fn clone(&self) -> Self {
@@ -460,11 +460,16 @@ mod coerce {
     }
 
     impl<A> Arena<A> {
-        fn gc<'r, 'a: 'r, T>(&'a self, t: T) -> Gc<'r, T> {
+        fn gc<'r, 'a: 'r, T, R: 'r>(&'a self, t: T) -> Gc<'r, R>
+        where
+            A: TypeEq<T> + TypeEq<R>,
+        {
+            let _ = <A as TypeEq<T>>::TYPE_NAME_EQ;
+            let _ = <A as TypeEq<R>>::TYPE_NAME_EQ;
             unsafe {
                 let v = &mut *self.0.get();
                 v.push(transmute_copy(&t));
-                Gc(&*(v.last().unwrap() as *const A as *const T))
+                Gc(&*(v.last().unwrap() as *const A as *const _))
             }
         }
     }
@@ -473,34 +478,45 @@ mod coerce {
         type S: 'static;
     }
 
+    type Of<T: Static> = T::S;
+
     impl<T: 'static + NoGc> Static for T {
         type S = T;
     }
 
-    unsafe trait CoerceLife<'b, 'a: 'b, A: 'a>: 'b + Sized {
-        fn from(a: A) -> Self {
+    unsafe trait CoerceLife<'b, 'a: 'b, A: 'a>: 'b + Sized + TypeEq<A> {
+        #[inline(always)]
+        fn coerce_life(a: A) -> Self {
+            let _ = Self::TYPE_NAME_EQ;
+
             let b = unsafe { ptr::read(&a as *const _ as *const _) };
             mem::forget(a);
             b
         }
-        const TYPE_ID_EQ: () = if !type_name_eq::<A, Self>() {
-            panic!("type mismatch")
+    }
+
+    /// Implemented for a type regardless of lifetime.
+    /// This will not generate an error a mismatched types error until you write `let _ = Self::TYPE_NAME_EQ;`
+    trait TypeEq<A> {
+        const TYPE_NAME_EQ: bool;
+    }
+    impl<A, B> TypeEq<A> for B {
+        default const TYPE_NAME_EQ: bool = if type_name_eq::<&A, &Self>() {
+            true
+        } else {
+            panic!("type mismatch") //~ [rustc const_err] [E] any use of this value will cause an error `#[deny(const_err)]` on by default
         };
     }
 
-    unsafe impl<'b, 'a: 'b, A: 'a + Static, B: 'b + Static> CoerceLife<'b, 'a, Gc<'a, A>>
-        for Gc<'b, B>
-    {
-        const TYPE_ID_EQ: () = assert_type_id_eq::<A, B>();
+    impl<'a, 'b, A: 'a, B: 'b> TypeEq<Gc<'a, A>> for Gc<'b, B> {
+        default const TYPE_NAME_EQ: bool = if type_name_eq::<&A, &Self>() {
+            true
+        } else {
+            panic!("type mismatch") //~ [rustc const_err] [E] any use of this value will cause an error `#[deny(const_err)]` on by default
+        };
     }
 
-    const fn assert_type_id_eq<A: Static, B: Static>() {
-        if !type_id_eq::<A, B>() {
-            panic!("type mismatch")
-        }
-    }
-
-    const fn type_name_eq<A, B>() -> bool {
+    pub const fn type_name_eq<A, B>() -> bool {
         let a = any::type_name::<A>().as_bytes();
         let b = any::type_name::<B>().as_bytes();
         if a.len() != b.len() {
@@ -508,55 +524,122 @@ mod coerce {
         } else {
             let mut i = 0;
             while i < a.len() {
-                i -= 1;
-
                 if a[i] != b[i] {
                     return false;
                 }
+
+                i += 1;
             }
 
             true
         }
     }
 
-    const fn type_id_eq<A: Static, B: Static>() -> bool {
-        unsafe {
-            transmute::<TypeId, usize>(TypeId::of::<usize>())
-                == transmute::<TypeId, usize>(TypeId::of::<usize>())
+    #[test]
+    fn type_eq_ref_test() {
+        assert!(!type_name_eq::<usize, &usize>());
+    }
+
+    unsafe impl<'b, 'a: 'b, A: 'a, B: 'b> CoerceLife<'b, 'a, Gc<'a, A>> for Gc<'b, B> where
+        Self: TypeEq<Gc<'a, A>>
+    {
+    }
+
+    #[test]
+    fn type_eq_test() {
+        // Gc::<usize>::coerce_life(Gc(&1isize)); //~ Err
+    }
+
+    #[test]
+    fn life_times_test() {
+        fn good<'a>(n: usize, a: &'a Arena<usize>) -> Gc<'a, usize> {
+            Gc::coerce_life(a.gc::<usize, usize>(n))
+        }
+
+        fn good2<'r, 'a: 'r, T: Static>(n: T, a: &'a Arena<T::S>) -> Gc<'r, T> {
+            let n: Gc<'r, T> = a.gc(n);
+            Gc::coerce_life(n)
+        }
+
+        fn good3<'s, 'b: 's, T>(t: &'s T) -> &'b T {
+            // Gc::coerce_life(Gc(t)).0 //~ [rustc E0495] [E] cannot infer an appropriate lifetime for lifetime parameter `'r` due to conflicting requirements
+            unreachable!()
+        }
+
+        fn good4<'s, 'b: 's, T>(t: &'b T) -> &'s T {
+            Gc::coerce_life(Gc(t)).0
+        }
+
+        fn good5<'s, 'b: 's, T>(t: &'b T) -> &'s T
+        where
+            for<'l> &'l T: Static,
+        {
+            let a = Arena::default();
+            good2(t, &a).0
+        }
+
+        fn good6<'s, 'b: 's, T>(t: &'s T) -> &'b T
+        where
+            for<'l> &'l T: Static,
+        {
+            let a: Arena<<&T as Static>::S> = Arena::default();
+            // good2(t, &a).0 //~ [rustc E0495] [E] cannot infer an appropriate lifetime due to conflicting requirements expected `&T` found `&'s T`
+            unreachable!()
         }
     }
 
     mod list {
-        use super::{assert_type_id_eq, CoerceLife, Gc, Static};
+        use super::{Arena, CoerceLife, Gc, Of, Static};
         use std::{
             mem::{self, transmute},
             ptr,
         };
 
-        #[derive(Eq, PartialEq)]
+        #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
         enum List<'r, T> {
-            Cons(T, Gc<'r, T>),
+            Cons(T, Gc<'r, List<'r, T>>),
             Nil,
         }
 
-        impl<'r, T> List<'r, T> {
-            fn cons<'a>() {}
+        impl<'l, T: Static + Clone> List<'l, T> {
+            fn cons<'r, 'a: 'r, R>(
+                t: T,
+                next: Gc<'l, List<'l, T>>,
+                arena: &'a Arena<T::S>,
+            ) -> Gc<'r, List<'r, R>> {
+                arena.gc(List::Cons(t, next))
+            }
+
+            pub fn insert<'r, 'a: 'r, R>(
+                list: Gc<List<T>>,
+                index: usize,
+                t: T,
+                arena: &'a Arena<Of<List<T>>>,
+            ) -> Gc<'r, List<'r, R>> {
+                if index == 0 {
+                    arena.gc(List::Cons(t, list))
+                } else {
+                    match list {
+                        Gc(List::Cons(v, next)) => arena.gc(List::Cons(
+                            v.clone(),
+                            List::insert(*next, index - 1, t, arena),
+                        )),
+                        Gc(List::Nil) => panic!("list is {} elemements too short", index),
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn insert_test() {
+            let a: Arena<<List<usize> as Static>::S> = Arena::default();
+            let l: Gc<List<usize>> = a.gc(List::<usize>::Nil);
+
+            let i: Gc<List<usize>> = List::insert(l, 0, 1, &a);
         }
 
         impl<'r, T: Static> Static for List<'r, T> {
             type S = List<'static, T::S>;
-        }
-
-        unsafe impl<'b, 'a: 'b, A: 'a + Static, B: 'b + Static> CoerceLife<'b, 'a, List<'a, A>>
-            for List<'b, B>
-        {
-            fn from(a: List<'a, A>) -> Self {
-                let b = unsafe { ptr::read(&a as *const _ as *const _) };
-                mem::forget(a);
-                b
-            }
-
-            const TYPE_ID_EQ: () = assert_type_id_eq::<A, B>();
         }
     }
 }
