@@ -5,6 +5,7 @@
 #![feature(negative_impls)]
 #![feature(optin_builtin_traits)]
 #![feature(associated_type_bounds)]
+#![feature(dropck_eyepatch)]
 
 extern crate static_assertions as sa;
 use auto_traits::NoGc;
@@ -74,12 +75,12 @@ impl<'r, T> Clone for Gc<'r, T> {
     }
 }
 
-pub struct GcL<T>(PhantomData<T>);
-impl<T: PlugLife> PlugLife for GcL<T> {
+pub struct GcF<T>(PhantomData<T>);
+impl<T: PlugLife> PlugLife for GcF<T> {
     type T<'l> = Gc<'l, <T as PlugLife>::T<'l>>;
 }
 impl<'r, T: UnPlugLife> UnPlugLife for Gc<'r, T> {
-    type T = GcL<<T as UnPlugLife>::T>;
+    type T = GcF<<T as UnPlugLife>::T>;
     type L = &'r ();
 }
 
@@ -160,7 +161,7 @@ mod auto_traits {
 
     pub unsafe auto trait NoGc {}
     impl<'r, T> !NoGc for Gc<'r, T> {}
-    impl<T> !NoGc for GcL<T> {}
+    impl<T> !NoGc for GcF<T> {}
     // unsafe impl<'r, T: NoGc> NoGc for Box<T> {}
 
     pub trait HasGc {
@@ -198,8 +199,8 @@ mod list {
         value: T,
     }
 
-    pub struct ListL<T>(PhantomData<GcL<T>>);
-    pub struct ElemL<T>(PhantomData<GcL<T>>);
+    pub struct ListL<T>(PhantomData<GcF<T>>);
+    pub struct ElemL<T>(PhantomData<GcF<T>>);
 
     impl<T: PlugLife> PlugLife for ListL<T> {
         type T<'l> = List<'l, <T as PlugLife>::T<'l>>;
@@ -327,8 +328,8 @@ mod map {
     //     }
     // }
 
-    pub struct MapL<K, V>(PhantomData<GcL<(K, V)>>);
-    pub struct NodeL<K, V>(PhantomData<GcL<(K, V)>>);
+    pub struct MapL<K, V>(PhantomData<GcF<(K, V)>>);
+    pub struct NodeL<K, V>(PhantomData<GcF<(K, V)>>);
     impl<K: PlugLife, V: PlugLife> PlugLife for MapL<K, V> {
         type T<'l> = Map<'l, <K as PlugLife>::T<'l>, <V as PlugLife>::T<'l>>;
     }
@@ -392,8 +393,8 @@ mod map {
             let _: Ty<'a, Gc<'a, T>> = b;
             let _: Ty<'a, Gc<'static, T>> = b;
             // a == b //~ expected struct `Gc<'_, T>`
-                   //^ found struct `Gc<'a, <<T as UnPlugLife>::T as PlugLife>::T<'a>>`
-                   todo!()
+            //^ found struct `Gc<'a, <<T as UnPlugLife>::T as PlugLife>::T<'a>>`
+            todo!()
         }
     }
 
@@ -412,4 +413,168 @@ mod map {
         let a: List<T> = List::Cons(a, &b);
         a == b
     }
+}
+
+mod fam {
+    use std::marker::PhantomData;
+
+    pub unsafe auto trait NoGc {}
+    impl<'r, T> !NoGc for Gc<'r, T> {}
+    impl<T> !NoGc for GcF<T> {}
+
+    trait Type {
+        type T: 'static + Life;
+    }
+    trait Life: 'static {
+        type L<#[may_dangle] 'l>: Type<T = Self>;
+    }
+
+    #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq)]
+    struct PF<T: 'static + NoGc>(PhantomData<T>);
+
+    impl<T: 'static + NoGc> Type for T {
+        type T = PF<T>;
+    }
+    impl<T: 'static + NoGc> Life for PF<T> {
+        type L<'l> = T;
+    }
+
+
+    #[derive(Eq, PartialEq)]
+    struct Gc<'r, T: Life>(&'r T::L<'r>);
+    struct GcF<T>(PhantomData<T>);
+
+    impl<'r, T: Life> Copy for Gc<'r, T> {}
+    impl<'r, T: Life> Clone for Gc<'r, T> {
+        fn clone(&self) -> Self {
+            *self
+        }
+    }
+    impl<'r, T: Life> std::ops::Deref for Gc<'r, T> {
+        type Target = T::L<'r>;
+
+        fn deref(&self) -> &Self::Target {
+            self.0
+        }
+    }
+
+    impl<'r, T: Life> Type for Gc<'r, T> {
+        type T = GcF<T>;
+    }
+    impl<T: Life> Life for GcF<T> {
+        type L<'l> = Gc<'l, T>;
+    }
+
+    // struct T2F<A: Life, B: Life>(PhantomData<GcF<(A, B)>>);
+    // impl<A: Type, B: Type> Type for (A, B) {
+    //     type T = T2F<A::T, B::T>;
+    // }
+
+    // impl<A: Life, B: Life> Life for T2F<A, B> {
+    //     type L<'l> = (A::L<'l>, B::L<'l>);
+    // }
+
+    struct Map<'r, K: Life, V: Life>(Option<Gc<'r, NodeF<K, V>>>);
+    struct Node<'r, K: Life, V: Life> {
+        key: K::L<'r>,
+        size: usize,
+        left: Map<'r, K, V>,
+        right: Map<'r, K, V>,
+        value: V::L<'r>,
+    }
+    pub struct MapF<K, V>(PhantomData<GcF<(K, V)>>);
+    pub struct NodeF<K, V>(PhantomData<GcF<(K, V)>>);
+
+    impl<'r, K: Life, V: Life> Type for Map<'r, K, V> {
+        type T = MapF<K, V>;
+    }
+    impl<K: Life, V: Life> Life for MapF<K, V> {
+        type L<'l> = Map<'l, K, V>;
+    }
+
+    impl<'r, K: Life, V: Life> Type for Node<'r, K, V> {
+        type T = NodeF<K, V>;
+    }
+    impl<K: Life, V: Life> Life for NodeF<K, V> {
+        type L<'l> = Node<'l, K, V>;
+    }
+
+    // fn bad<'a, 'b, T: Life>(a: Gc<'a, T>, b: Gc<'b, T>) -> bool
+    // where
+    //     for<'l> T::L<'l>: Eq,
+    // {
+    //     // let _ = a == b;
+    //     *a == *b
+    // }
+
+
+    fn bad<'a, 'b, T: Life>(a: Gc<'a, PF<usize>>, b: Gc<'b, PF<usize>>) -> bool
+    {
+        let _ = a == b;
+        *a == *b
+    }
+
+    fn good<T: Eq>(a: &T, b: &T) -> bool
+    {
+        let _ = a == b;
+        *a == *b
+    }
+
+    #[derive(Eq, PartialEq)]
+    enum List<'r, T: Life> {
+        Cons(T::L<'r>, Gc<'r, ListF<T>>),
+        Nil,
+    }
+    struct ListF<T: Life>(PhantomData<GcF<T>>);
+
+    impl<T: Life> Eq for ListF<T> {}
+    impl<T: Life> PartialEq for ListF<T> {
+        fn eq(&self, other: &Self) -> bool {
+            unreachable!()
+        }
+    }
+
+    impl<'r, T: Life> Type for List<'r, T> {
+        type T = ListF<T>;
+    }
+    impl<T: Life> Life for ListF<T> {
+        type L<'l> = List<'l, T>;
+    }
+
+
+    fn foo<'l, 'a: 'l, 'b: 'l, T: Life + Eq>(a: T::L<'a>, b: Gc<'b, ListF<T>>) -> bool
+    {
+        let a: List<'l, T> = List::Cons(a, b);
+        // a == b
+        todo!()
+    }
+
+    // fn foo<'a, 'b, T: Life + Eq>(a: T::L<'a>, b: List<'b, T>) -> bool
+    // where
+    //     for<'l> T::L<'l>: Eq,
+    // {
+    //     let a: List<'b, T> = List::Cons(a, Gc(&b));
+    //     a == b
+    // }
+
+    // fn bar<'a, 'b, T: Eq>(a: &'a T, b: &'b T) -> bool {
+    //     let b: List<&T> = List::Cons(&b, &List::Nil);
+    //     foo(&a, b)
+    // }
+}
+
+#[derive(Eq, PartialEq)]
+enum List<'l, T> {
+    Cons(&'l T, &'l Self),
+    Nil,
+}
+
+fn foo<'a, 'b, T: Eq>(a: &'a T, b: List<'b, T>) -> bool {
+    let a: List<T> = List::Cons(a, &b);
+    a == b
+}
+
+fn bar<'a, 'b, T: Eq>(a: &'a T, b: &'b T) -> bool {
+    let b: List<&T> = List::Cons(&b, &List::Nil);
+    foo(&a, b)
 }
