@@ -4,6 +4,10 @@
 #![feature(generic_associated_types)]
 #![feature(negative_impls)]
 #![feature(optin_builtin_traits)]
+#![feature(const_panic)]
+#![feature(const_trait_impl)]
+#![feature(const_trait_bound_opt_out)]
+#![feature(const_fn)]
 
 extern crate static_assertions as sa;
 use auto_traits::NoGc;
@@ -410,5 +414,52 @@ mod map {
         let b: List<T> = List::Cons(b, &List::Nil);
         let a: List<T> = List::Cons(a, &b);
         a == b
+    }
+}
+
+mod coerce {
+    use std::{cell::UnsafeCell, mem::{transmute_copy, transmute}, any::TypeId};
+
+    pub struct Gc<'r, T: 'r>(&'r T);
+    impl<'r, T> Copy for Gc<'r, T> {}
+    impl<'r, T> Clone for Gc<'r, T> {
+        fn clone(&self) -> Self {
+            *self
+        }
+    }
+
+    pub struct Arena<A>(UnsafeCell<Vec<A>>);
+
+    impl<A> Default for Arena<A> {
+        fn default() -> Self {
+        Arena(UnsafeCell::new(Vec::new()))
+    }
+    }
+
+    impl<A> Arena<A> {
+        fn gc<'r, 'a: 'r, T>(&'a self, t: T) -> Gc<'r, T> {
+            unsafe {
+                let v = &mut *self.0.get();
+                v.push(transmute_copy(&t));
+                Gc(&*(v.last().unwrap() as *const A as *const T))
+            }
+        }
+    }
+
+    trait Static {
+        type S: 'static;
+    }
+
+    trait CoerceLife<'b, 'a: 'b,  A: 'a>: 'b {
+        fn from(a: A) -> Self;
+        const TYPE_ID_EQ: ();
+    }
+
+    impl<'b, 'a: 'b, A: 'a + Static, B: 'b + Static> const CoerceLife<'b, 'a, Gc<'a, A>> for Gc<'b, B> where TypeId: ?const PartialEq {
+        fn from(a: Gc<'a, A>) -> Self {
+      unsafe {    transmute(a)} 
+    }
+
+        const TYPE_ID_EQ: () = if 1 == 1 { panic!("type missmatch") };
     }
 }
