@@ -62,7 +62,7 @@ trait Static {
     type S: 'static;
 }
 
-type Of<T: Static> = T::S;
+type Of<T> = <T as Static>::S;
 
 impl<T: 'static + NoGc> Static for T {
     type S = T;
@@ -279,7 +279,6 @@ mod list {
             ListT(Some(arena.gc(Elem { next, value })))
         }
 
-
         pub fn insert_mark<'n, 'a: 'n, N>(
             self,
             index: usize,
@@ -292,6 +291,103 @@ mod list {
             let next = next.insert(index - 1, t, arena);
 
             ListT(Some(arena.gc(Elem { next, value })))
+        }
+    }
+}
+
+mod alloc {
+    use crate::{Arena, Gc, NoGc, Of, Static};
+
+    pub unsafe trait Alloc<'n, O, N: 'n> {
+        /// Create and allocate a new `Gc<T>`.
+        /// This has the effect of marking `T`'s decedents live for the lifetime of the Arena `'a`.
+        ///
+        /// If `T : Copy` & `size_of::<T>() > 8`, you should use `self.gc_copy(&T)` instead.
+        fn gc_mark<'a: 'n>(&'a self, t: O) -> Gc<'n, N>;
+        // TODO gc_*
+    }
+
+    unsafe impl<'n, A, O, N: 'n> Alloc<'n, O, N> for Arena<A> {
+        default fn gc_mark<'a: 'n>(&'a self, t: O) -> Gc<'n, N> {
+            todo!()
+        }
+    }
+
+    unsafe impl<'n, A: NoGc + 'static> Alloc<'n, A, A> for Arena<A> {
+        fn gc_mark<'a: 'n>(&'a self, t: A) -> Gc<'n, A> {
+            todo!()
+        }
+    }
+
+    pub unsafe trait Trace: Immutable {
+        fn fields(s: &Self, offset: u8, grey_fields: u8) -> u8;
+    }
+
+    struct List<'r, T>(Option<Gc<'r, Elem<'r, T>>>)
+    where
+        T: 'r;
+
+    #[derive(Clone)]
+    struct Elem<'r, T>
+    where
+        T: 'r,
+    {
+        next: List<'r, T>,
+        value: T,
+    }
+
+    impl<'r, T: Copy> Copy for Elem<'r, T> {}
+
+    impl<'r, T> Copy for List<'r, T> {}
+    impl<'r, T> Clone for List<'r, T> {
+        fn clone(&self) -> Self {
+            *self
+        }
+    }
+
+    impl<'r, T: Static> Static for List<'r, T> {
+        type S = List<'static, T::S>;
+    }
+    impl<'r, T: Static> Static for Elem<'r, T> {
+        type S = Elem<'static, T::S>;
+    }
+
+    impl<'r, T: 'r + Static + Clone> List<'r, T> {
+        /// Inserts an element at position `index`.
+        /// This is equivalent `Vec::insert` not Haskell's `insert :: Ord a => a -> [a] -> [a]`.
+        ///
+        /// # Panics
+        ///
+        /// Panics if `index > len`.
+        /// This function is recursive and may cause a stack overflow.
+        ///
+        /// TODO Replace with non recursive variant.
+        pub fn insert<'a: 'r>(
+            self,
+            index: usize,
+            t: T,
+            arena: &'a Arena<Of<Elem<T>>>,
+        ) -> List<'r, T> {
+            let Gc(Elem { next, value }) = self.0.unwrap();
+            let value: T = value.clone();
+
+            let next: List<'r, T> = next.insert(index - 1, t, arena);
+
+            List(Some(arena.gc(Elem { next, value })))
+        }
+
+        pub fn insert_mark<'n, 'a: 'n, N>(
+            self,
+            index: usize,
+            t: T,
+            arena: &'a Arena<Of<Elem<T>>>,
+        ) -> List<'n, N> {
+            let Gc(Elem { next, value }) = self.0.unwrap();
+            let value: T = value.clone();
+
+            let next = next.insert(index - 1, t, arena);
+
+            List(Some(arena.gc(Elem { next, value })))
         }
     }
 }
