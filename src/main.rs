@@ -6,19 +6,10 @@
 #![feature(optin_builtin_traits)]
 #![feature(dropck_eyepatch)]
 
-use auto_traits::NoGc;
 use std::marker::PhantomData;
 
 fn main() {
     println!("Hello, world!");
-}
-
-pub trait PlugL<'a>: PlugLife {
-    type TL;
-}
-
-impl<'a, T: PlugLife> PlugL<'a> for T {
-    type TL = Self::T<'a>;
 }
 
 pub trait Plug {
@@ -30,16 +21,16 @@ pub trait UnPlug {
     type A;
 }
 
-pub trait PlugLife {
-    type T<'l>: 'l + UnPlugLife<T = Self>;
+pub trait PlugLife<'l> {
+    type T: 'l + UnPlugLife<T = Self>;
 }
 
 pub trait UnPlugLife {
-    type T: PlugLife;
+    type T: for<'a> PlugLife<'a>;
 }
 
-impl PlugLife for usize {
-    type T<'l> = usize;
+impl<'l> PlugLife<'l> for usize {
+    type T = usize;
 }
 
 impl UnPlugLife for usize {
@@ -47,6 +38,7 @@ impl UnPlugLife for usize {
 }
 
 /// Realy `Gc<'r, T>(&'r T<'r>);`
+#[derive(Debug, PartialOrd, PartialEq, Ord, Eq)]
 pub struct Gc<'r, T>(&'r T);
 impl<'r, T> Copy for Gc<'r, T> {}
 impl<'r, T> Clone for Gc<'r, T> {
@@ -55,20 +47,20 @@ impl<'r, T> Clone for Gc<'r, T> {
     }
 }
 
-pub struct GcL<T>(PhantomData<T>);
-impl<T: PlugLife> PlugLife for GcL<T> {
-    type T<'l> = Gc<'l, <T as PlugLife>::T<'l>>;
+pub struct GcL<#[may_dangle] T>(PhantomData<T>);
+unsafe impl<#[may_dangle] 'l, #[may_dangle] T: PlugLife<'l>> PlugLife<'l> for GcL<T> {
+    type T = Gc<'l, <T as PlugLife<'l>>::T>;
 }
-impl<'r, T: UnPlugLife> UnPlugLife for Gc<'r, T> {
+unsafe impl<#[may_dangle] 'r, #[may_dangle] T: UnPlugLife> UnPlugLife for Gc<'r, T> {
     type T = GcL<<T as UnPlugLife>::T>;
 }
 
-pub type Life<'r, T> = <<T as UnPlugLife>::T as PlugLife>::T<'r>;
+pub type Of<'r, #[may_dangle] T> = <<T as UnPlugLife>::T as PlugLife<'r>>::T;
 
 pub struct Arena<#[may_dangle] A>(Vec<A>);
 
 impl<#[may_dangle] T: UnPlugLife> Arena<T> {
-    pub fn gc<'r>(&'r self, t: T) -> Gc<'r, Life<'r, T>> {
+    pub fn gc<'r>(&'r self, t: T) -> Gc<'r, Of<'r, T>> {
         todo!()
     }
 
@@ -76,7 +68,7 @@ impl<#[may_dangle] T: UnPlugLife> Arena<T> {
         todo!()
     }
 
-    pub fn mark<'n>(&'n self, o: Gc<'_, T>) -> Gc<'n, Life<'n, T>> {
+    pub fn mark<'n>(&'n self, o: Gc<'_, T>) -> Gc<'n, Of<'n, T>> {
         unsafe { std::mem::transmute(o) }
     }
 }
@@ -125,19 +117,19 @@ mod list {
         value: T,
     }
 
-    pub struct ListL<T>(PhantomData<T>);
-    pub struct ElemL<T>(PhantomData<T>);
+    pub struct ListL<#[may_dangle] T>(PhantomData<T>);
+    pub struct ElemL<#[may_dangle] T>(PhantomData<T>);
 
-    impl<T: PlugLife> PlugLife for ListL<T> {
-        type T<'l> = List<'l, <T as PlugLife>::T<'l>>;
+    unsafe impl<#[may_dangle] 'l, #[may_dangle] T: PlugLife<'l>> PlugLife<'l> for ListL<T> {
+        type T = List<'l, <T as PlugLife<'l>>::T>;
     }
-    impl<'r, T: UnPlugLife> UnPlugLife for List<'r, T> {
+    unsafe impl<#[may_dangle] 'r, #[may_dangle] T: UnPlugLife> UnPlugLife for List<'r, T> {
         type T = ListL<<T as UnPlugLife>::T>;
     }
-    impl<T: PlugLife> PlugLife for ElemL<T> {
-        type T<'l> = Elem<'l, <T as PlugLife>::T<'l>>;
+    unsafe impl<#[may_dangle] 'l, #[may_dangle] T: PlugLife<'l>> PlugLife<'l> for ElemL<T> {
+        type T = Elem<'l, <T as PlugLife<'l>>::T>;
     }
-    impl<'r, T: UnPlugLife> UnPlugLife for Elem<'r, T> {
+    unsafe impl<#[may_dangle] 'r, #[may_dangle] T: UnPlugLife> UnPlugLife for Elem<'r, T> {
         type T = ElemL<<T as UnPlugLife>::T>;
     }
 
@@ -156,34 +148,49 @@ mod list {
     }
 
     impl<'o, T: UnPlugLife> List<'o, T> {
-        /// Prepend `value` to a list.
-        /// The arguments are in reverse order.
-        pub fn cons<'r, 'a: 'r>(
-            self,
-            value: T,
-            arena: &'a Arena<Elem<T>>,
-        ) -> List<'r, Life<'r, T>> {
-            let elem: Elem<'o, T> = Elem { next: self, value };
-            let e: Gc<'r, Life<'r, Elem<T>>> = arena.gc(elem);
-            //~                                      ^^
-            // [rustc E0495] [E] cannot infer an appropriate lifetime due to conflicting requirements
-            // expected `Elem<'_, _>`
-            //    found `Elem<'o, _>`
-            // expected `Gc<'r, Elem<'r, <<T as UnPlugLife>::T as PlugLife>::T<'r>>>`
-            //    found `Gc<'_, Elem<'_, <<T as UnPlugLife>::T as PlugLife>::T<'_>>>`
-            List::from(e)
-        }
+        //  /// Prepend `value` to a list.
+        //  /// The arguments are in reverse order.
+        //     pub fn cons<'r, 'a: 'r>(
+        //         self,
+        //         value: T,
+        //         arena: &'a Arena<Elem<T>>,
+        //     ) -> List<'r, Life<'r, T>> {
+        //         let elem: Elem<'o, T> = Elem { next: self, value };
+        //         let e: Gc<'r, Life<'r, Elem<T>>> = arena.gc(elem);
+        //         //~                                      ^^
+        //         // [rustc E0495] [E] cannot infer an appropriate lifetime due to conflicting requirements
+        //         // expected `Elem<'_, _>`
+        //         //    found `Elem<'o, _>`
+        //         // expected `Gc<'r, Elem<'r, <<T as UnPlugLife>::T as PlugLife>::T<'r>>>`
+        //         //    found `Gc<'_, Elem<'_, <<T as UnPlugLife>::T as PlugLife>::T<'_>>>`
+        //         List::from(e)
+        //     }
     }
 
     #[test]
     fn function_name_test() {
-       fn foo<'a, 'b, T: UnPlugLife + Eq>(a: Life<'a, T>, b: Life<'b, T>) {
-           let mut v = a;
-           v = b; //~ [rustc E0623] [E] lifetime mismatch ...but data from `a` flows into `b` here
+        fn foo<'a, 'b, T: UnPlugLife + Eq>(a: Of<'a, T>, b: Of<'b, T>) {
+            let mut v = a;
+            // v = b; //~ [rustc E0623] [E] lifetime mismatch ...but data from `a` flows into `b` here
 
-           a == b; 
-           //^~ [rustc E0369] [E] binary operation `==` cannot be applied to type `<<T as UnPlugLife>::T as PlugLife>::T<'a>`
-           //   the trait `std::cmp::PartialEq` is not implemented for `<<T as UnPlugLife>::T as PlugLife>::T<'a>`
-       } 
+            // a == b;
+            //^~ [rustc E0369] [E] binary operation `==` cannot be applied to type `<<T as UnPlugLife>::T as PlugLife>::T<'a>`
+            //   the trait `std::cmp::PartialEq` is not implemented for `<<T as UnPlugLife>::T as PlugLife>::T<'a>`
+        }
+
+        unsafe impl<#[may_dangle] 'l> PlugLife<'l> for &'static str {
+            type T = &'l str;
+        }
+        unsafe impl<#[may_dangle] 'r> UnPlugLife for &'r str {
+            type T = &'static str;
+        }
+        fn foo_str<'a, 'b>(a: Of<'a, Gc<'a, &str>>, b: Of<'b, Gc<&str>>, c: Gc<&str>) {
+            let mut v = a;
+            v = b; //~ [rustc E0623] [E] lifetime mismatch ...but data from `a` flows into `b` here
+            v = c;
+            a == b;
+            //^~ [rustc E0369] [E] binary operation `==` cannot be applied to type `<<T as UnPlugLife>::T as PlugLife>::T<'a>`
+            //   the trait `std::cmp::PartialEq` is not implemented for `<<T as UnPlugLife>::T as PlugLife>::T<'a>`
+        }
     }
 }
